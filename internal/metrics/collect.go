@@ -17,14 +17,16 @@ import (
 type nodeState struct {
 	cfg config.Node
 
-	havePrev bool
-	prevTime time.Time
-	cpuTotal float64
-	cpuIdle  float64
-	netRx    float64
-	netTx    float64
-	diskR    float64
-	diskW    float64
+	havePrev  bool
+	prevTime  time.Time
+	cpuTotal  float64
+	cpuIdle   float64
+	coreTotal map[string]float64 // per-cpu sum across modes
+	coreIdle  map[string]float64 // per-cpu idle counter
+	netRx     float64
+	netTx     float64
+	diskR     float64
+	diskW     float64
 }
 
 // Collector scrapes a fixed set of nodes.
@@ -74,6 +76,7 @@ func (c *Collector) collectOne(ctx context.Context, st *nodeState) Snapshot {
 
 		cpuTotal := hf.sum("node_cpu_seconds_total")
 		cpuIdle := hf.sumWhere("node_cpu_seconds_total", func(l map[string]string) bool { return l["mode"] == "idle" })
+		coreTotal, coreIdle := perCoreCPU(hf)
 		netRx := hf.sumWhere("node_network_receive_bytes_total", isPhysicalIface)
 		netTx := hf.sumWhere("node_network_transmit_bytes_total", isPhysicalIface)
 		diskR := hf.sumWhere("node_disk_read_bytes_total", isPhysicalDisk)
@@ -84,6 +87,7 @@ func (c *Collector) collectOne(ctx context.Context, st *nodeState) Snapshot {
 				if dTotal := cpuTotal - st.cpuTotal; dTotal > 0 {
 					s.CPUPct = clampf(100*(1-(cpuIdle-st.cpuIdle)/dTotal), 0, 100)
 				}
+				s.PerCoreUtil = perCoreUtil(coreTotal, coreIdle, st.coreTotal, st.coreIdle)
 				s.NetRxBps = nonneg(netRx-st.netRx) / dt
 				s.NetTxBps = nonneg(netTx-st.netTx) / dt
 				s.DiskRBps = nonneg(diskR-st.diskR) / dt
@@ -93,6 +97,7 @@ func (c *Collector) collectOne(ctx context.Context, st *nodeState) Snapshot {
 		st.havePrev = true
 		st.prevTime = now
 		st.cpuTotal, st.cpuIdle = cpuTotal, cpuIdle
+		st.coreTotal, st.coreIdle = coreTotal, coreIdle
 		st.netRx, st.netTx = netRx, netTx
 		st.diskR, st.diskW = diskR, diskW
 	}
@@ -121,6 +126,46 @@ func (c *Collector) scrape(ctx context.Context, url string) (family, error) {
 		return nil, fmt.Errorf("HTTP %s", resp.Status)
 	}
 	return parseText(resp.Body)
+}
+
+// perCoreCPU walks node_cpu_seconds_total samples once, grouping by the "cpu"
+// label. Returns (total seconds, idle seconds) per core.
+func perCoreCPU(f family) (total, idle map[string]float64) {
+	total = map[string]float64{}
+	idle = map[string]float64{}
+	for _, sm := range f["node_cpu_seconds_total"] {
+		cpu := sm.Labels["cpu"]
+		total[cpu] += sm.Value
+		if sm.Labels["mode"] == "idle" {
+			idle[cpu] = sm.Value
+		}
+	}
+	return total, idle
+}
+
+// perCoreUtil computes per-core utilization (%) from current and previous
+// counters. Results are ordered numerically by the "cpu" label.
+func perCoreUtil(total, idle, prevTotal, prevIdle map[string]float64) []float64 {
+	if len(prevTotal) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(total))
+	for k := range total {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return lessIndex(keys[i], keys[j]) })
+
+	out := make([]float64, 0, len(keys))
+	for _, k := range keys {
+		dt := total[k] - prevTotal[k]
+		if dt <= 0 {
+			out = append(out, 0)
+			continue
+		}
+		di := idle[k] - prevIdle[k]
+		out = append(out, clampf(100*(1-di/dt), 0, 100))
+	}
+	return out
 }
 
 func fillHost(s *Snapshot, f family) {
