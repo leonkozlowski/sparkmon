@@ -26,18 +26,19 @@ type Snapshot struct {
 	GPUErr string // dcgm-exporter scrape error, if any
 
 	// host metrics (from node_exporter)
-	NCPU       int
-	CPUPct     float64 // 0..100, derived from cpu-seconds deltas
-	Load1      float64
-	MemTotalB  float64
-	MemUsedB   float64
-	MemUsedPct float64 // 0..100
-	RootFSPct  float64 // 0..100, "/" filesystem
-	Uptime     time.Duration
-	NetRxBps   float64 // sum over physical interfaces, derived
-	NetTxBps   float64
-	DiskRBps   float64 // sum over physical disks, derived
-	DiskWBps   float64
+	NCPU        int
+	CPUPct      float64   // 0..100, derived from cpu-seconds deltas
+	PerCoreUtil []float64 // 0..100 per logical CPU, indexed in cpu-label order
+	Load1       float64
+	MemTotalB   float64
+	MemUsedB    float64
+	MemUsedPct  float64 // 0..100
+	RootFSPct   float64 // 0..100, "/" filesystem
+	Uptime      time.Duration
+	NetRxBps    float64 // sum over physical interfaces, derived
+	NetTxBps    float64
+	DiskRBps    float64 // sum over physical disks, derived
+	DiskWBps    float64
 
 	// GPU metrics (from dcgm-exporter)
 	GPUs []GPU

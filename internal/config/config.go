@@ -48,6 +48,7 @@ func portOr(p, def int) int {
 // Config is the parsed config file.
 type Config struct {
 	Interval string `yaml:"interval"` // poll interval, e.g. "2s"
+	Timeout  string `yaml:"timeout"`  // per-scrape budget, e.g. "8s" (defaults to 4× interval, min 5s, max 30s)
 	History  int    `yaml:"history"`  // points kept per sparkline
 	Theme    string `yaml:"theme"`    // jig theme name (optional)
 	Nodes    []Node `yaml:"nodes"`
@@ -63,6 +64,26 @@ func (c *Config) PollEvery() time.Duration {
 	d, err := time.ParseDuration(strings.TrimSpace(c.Interval))
 	if err != nil || d < 250*time.Millisecond {
 		return 2 * time.Second
+	}
+	return d
+}
+
+// ScrapeTimeout is the per-scrape budget, decoupled from the poll cadence so a
+// slow exporter doesn't fail just because it's slower than the UI tick. If
+// `timeout:` is unset, defaults to max(5s, 4× interval), clamped to 30s.
+func (c *Config) ScrapeTimeout() time.Duration {
+	if s := strings.TrimSpace(c.Timeout); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			return d
+		}
+	}
+	every := c.PollEvery()
+	d := 4 * every
+	if d < 5*time.Second {
+		d = 5 * time.Second
+	}
+	if d > 30*time.Second {
+		d = 30 * time.Second
 	}
 	return d
 }

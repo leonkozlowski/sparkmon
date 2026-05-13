@@ -78,7 +78,8 @@ func runDashboard(cfgPath, nodesFlag string, intervalFlag time.Duration, themeNa
 	theme.SetProvider(selected)
 
 	every := cfg.PollEvery()
-	coll := metrics.NewCollector(cfg.Nodes, clampDur(every, time.Second, 5*time.Second))
+	timeout := cfg.ScrapeTimeout()
+	coll := metrics.NewCollector(cfg.Nodes, timeout)
 	app := ui.New(cfg, cfg.Nodes)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -94,7 +95,7 @@ func runDashboard(cfgPath, nodesFlag string, intervalFlag time.Duration, themeNa
 
 	go func() {
 		poll := func() {
-			cctx, c := context.WithTimeout(ctx, every)
+			cctx, c := context.WithTimeout(ctx, timeout)
 			snaps := coll.Collect(cctx)
 			c()
 			app.Submit(snaps)
@@ -115,14 +116,4 @@ func runDashboard(cfgPath, nodesFlag string, intervalFlag time.Duration, themeNa
 	}()
 
 	return app.Run()
-}
-
-func clampDur(d, lo, hi time.Duration) time.Duration {
-	if d < lo {
-		return lo
-	}
-	if d > hi {
-		return hi
-	}
-	return d
 }

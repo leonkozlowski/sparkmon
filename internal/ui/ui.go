@@ -15,15 +15,26 @@ import (
 	"github.com/leonkozlowski/sparkmon/internal/metrics"
 )
 
+// gpuWidgets are the live widgets for one GPU within a node column.
+type gpuWidgets struct {
+	row    *tview.Flex
+	header *tview.TextView
+	util   *Spark
+}
+
 // nodeWidgets are the live widgets for one node column.
 type nodeWidgets struct {
-	panel  *components.Panel
-	status *tview.TextView
-	cpu    *components.Sparkline
-	mem    *components.ProgressBar
-	gpu    *tview.TextView
-	netRx  *components.Sparkline
-	netTx  *components.Sparkline
+	panel     *components.Panel
+	status    *tview.TextView
+	cpu       *Spark
+	cores     *CoreGrid
+	mem       *components.ProgressBar
+	gpuStatus *tview.TextView
+	gpuFlex   *tview.Flex
+	gpus      map[string]*gpuWidgets
+	gpuOrder  []string
+	netRx     *Spark
+	netTx     *Spark
 }
 
 // UI owns the jig application and the per-node widgets.
@@ -84,12 +95,15 @@ func New(cfg *config.Config, nodes []config.Node) *UI {
 
 func newNodeWidgets(title string) *nodeWidgets {
 	w := &nodeWidgets{
-		status: tview.NewTextView().SetDynamicColors(true),
-		cpu:    components.NewSparkline().SetLabel("CPU %").SetMaxValue(100),
-		mem:    components.NewProgressBar().SetLabel("MEM").SetShowPercentage(true),
-		gpu:    tview.NewTextView().SetDynamicColors(true),
-		netRx:  components.NewSparkline().SetLabel("net rx"),
-		netTx:  components.NewSparkline().SetLabel("net tx"),
+		status:    tview.NewTextView().SetDynamicColors(true),
+		cpu:       NewSpark().SetLabel("CPU %").SetMaxValue(100),
+		cores:     NewCoreGrid(),
+		mem:       components.NewProgressBar().SetLabel("MEM").SetShowPercentage(true),
+		gpuStatus: tview.NewTextView().SetDynamicColors(true),
+		gpuFlex:   tview.NewFlex().SetDirection(tview.FlexRow),
+		gpus:      map[string]*gpuWidgets{},
+		netRx:     NewSpark().SetLabel("net rx B/s"),
+		netTx:     NewSpark().SetLabel("net tx B/s"),
 	}
 
 	net := tview.NewFlex().SetDirection(tview.FlexColumn).
@@ -99,14 +113,28 @@ func newNodeWidgets(title string) *nodeWidgets {
 	body := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(w.status, 3, 0, false).
 		AddItem(w.cpu, 0, 3, false).
+		AddItem(label(" cores"), 1, 0, false).
+		AddItem(w.cores, 0, 4, false).
 		AddItem(w.mem, 1, 0, false).
 		AddItem(label(" GPU"), 1, 0, false).
-		AddItem(w.gpu, 0, 2, false).
-		AddItem(net, 0, 2, false)
+		AddItem(w.gpuStatus, 1, 0, false).
+		AddItem(w.gpuFlex, 0, 5, false).
+		AddItem(net, 0, 3, false)
 
 	w.panel = components.NewPanel().SetTitle(" " + title + " ")
 	w.panel.SetContent(body)
 	return w
+}
+
+func newGPUWidgets() *gpuWidgets {
+	g := &gpuWidgets{
+		header: tview.NewTextView().SetDynamicColors(true),
+		util:   NewSpark().SetLabel("util %").SetMaxValue(100),
+	}
+	g.row = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(g.header, 1, 0, false).
+		AddItem(g.util, 0, 4, false)
+	return g
 }
 
 func label(s string) *tview.TextView {
@@ -144,46 +172,138 @@ func (u *UI) render(snaps []metrics.Snapshot) {
 		if i >= len(snaps) {
 			continue
 		}
-		s := snaps[i]
+		u.renderNode(w, snaps[i])
+	}
+}
 
-		if !s.Up {
-			w.status.SetText(fmt.Sprintf("[red]● DOWN[-]\n%s\n", trunc(orDash(s.Err), 80)))
-			w.cpu.AddValue(0, u.hist)
-			w.mem.SetProgress(0)
-			w.netRx.AddValue(0, u.hist)
-			w.netTx.AddValue(0, u.hist)
-			w.gpu.SetText("[gray]—")
-			continue
+func (u *UI) renderNode(w *nodeWidgets, s metrics.Snapshot) {
+	if !s.Up {
+		w.status.SetText(fmt.Sprintf("[red]● DOWN[-]\n%s\n", trunc(orDash(s.Err), 80)))
+		w.cpu.AddValue(0, u.hist)
+		w.cores.Reset()
+		w.mem.SetProgress(0)
+		w.netRx.AddValue(0, u.hist)
+		w.netTx.AddValue(0, u.hist)
+		w.gpuStatus.SetText("[gray]—")
+		u.clearGPUs(w)
+		return
+	}
+
+	cpuCol := colorByPct(s.CPUPct)
+	memCol := colorByPct(s.MemUsedPct)
+	rootCol := colorByPct(s.RootFSPct)
+	loadCol := colorByLoad(s.Load1, s.NCPU)
+
+	w.status.SetText(fmt.Sprintf(
+		"[green]● up[-]   uptime %s\n"+
+			"CPU [%s]%3.0f%%[-]  ·  %d cores  ·  load [%s]%.2f[-]  ·  mem [%s]%s/%s (%.0f%%)[-]  ·  / [%s]%.0f%%[-]\n"+
+			"disk r/w %s · %s    net rx/tx %s · %s",
+		fmtDur(s.Uptime),
+		cpuCol, s.CPUPct, s.NCPU, loadCol, s.Load1,
+		memCol, human(s.MemUsedB), human(s.MemTotalB), s.MemUsedPct,
+		rootCol, s.RootFSPct,
+		humanRate(s.DiskRBps), humanRate(s.DiskWBps), humanRate(s.NetRxBps), humanRate(s.NetTxBps)))
+
+	w.cpu.AddValue(s.CPUPct, u.hist)
+	w.cores.Update(s.PerCoreUtil, u.hist)
+	w.mem.SetProgress(clamp01(s.MemUsedPct / 100))
+	w.netRx.AddValue(s.NetRxBps, u.hist)
+	w.netTx.AddValue(s.NetTxBps, u.hist)
+
+	u.renderGPUs(w, s)
+}
+
+func (u *UI) renderGPUs(w *nodeWidgets, s metrics.Snapshot) {
+	switch {
+	case !s.GPUUp:
+		w.gpuStatus.SetText(fmt.Sprintf("[red]dcgm-exporter unreachable: %s", trunc(orDash(s.GPUErr), 70)))
+		u.clearGPUs(w)
+		return
+	case len(s.GPUs) == 0:
+		w.gpuStatus.SetText("[gray]no GPUs reported")
+		u.clearGPUs(w)
+		return
+	}
+	w.gpuStatus.SetText("")
+
+	for _, g := range s.GPUs {
+		gw, ok := w.gpus[g.Index]
+		if !ok {
+			gw = newGPUWidgets()
+			w.gpus[g.Index] = gw
+			w.gpuOrder = append(w.gpuOrder, g.Index)
+			w.gpuFlex.AddItem(gw.row, 0, 1, false)
 		}
-
-		w.status.SetText(fmt.Sprintf(
-			"[green]● up[-]   uptime %s\nCPU %3.0f%%  ·  %d cores  ·  load %.2f  ·  mem %s/%s (%.0f%%)  ·  / %.0f%%\ndisk r/w %s · %s    net rx/tx %s · %s",
-			fmtDur(s.Uptime),
-			s.CPUPct, s.NCPU, s.Load1, human(s.MemUsedB), human(s.MemTotalB), s.MemUsedPct, s.RootFSPct,
-			humanRate(s.DiskRBps), humanRate(s.DiskWBps), humanRate(s.NetRxBps), humanRate(s.NetTxBps)))
-
-		w.cpu.AddValue(s.CPUPct, u.hist)
-		w.mem.SetProgress(clamp01(s.MemUsedPct / 100))
-		w.netRx.AddValue(s.NetRxBps, u.hist)
-		w.netTx.AddValue(s.NetTxBps, u.hist)
-
-		switch {
-		case !s.GPUUp:
-			w.gpu.SetText(fmt.Sprintf("[gray]dcgm-exporter unreachable: %s", trunc(orDash(s.GPUErr), 70)))
-		case len(s.GPUs) == 0:
-			w.gpu.SetText("[gray]no GPUs reported")
-		default:
-			var b strings.Builder
-			for _, g := range s.GPUs {
-				model := g.Model
-				if model == "" {
-					model = "GPU"
-				}
-				fmt.Fprintf(&b, "[::b]%s[::-] %s\n  util %3.0f%%   vram %s/%s   %.0f°C   %.0f W   %.0f MHz\n",
-					"gpu"+g.Index, model, g.UtilPct, human(g.MemUsedB), human(g.MemTotalB), g.TempC, g.PowerW, g.SMClockMHz)
-			}
-			w.gpu.SetText(strings.TrimRight(b.String(), "\n"))
+		model := g.Model
+		if model == "" {
+			model = "GPU"
 		}
+		vram := ""
+		if g.MemTotalB > 0 {
+			pct := clampf(100*g.MemUsedB/g.MemTotalB, 0, 100)
+			vram = fmt.Sprintf(" · vram %s/%s ([%s]%.0f%%[-])",
+				human(g.MemUsedB), human(g.MemTotalB), colorByPct(pct), pct)
+		}
+		gw.header.SetText(fmt.Sprintf(
+			"[::b]gpu%s[::-] %s · util [%s]%3.0f%%[-] · [%s]%.0f°C[-] · %.0f W · %.0f MHz%s",
+			g.Index, model,
+			colorByPct(g.UtilPct), g.UtilPct,
+			colorByTemp(g.TempC), g.TempC,
+			g.PowerW, g.SMClockMHz,
+			vram))
+		gw.util.AddValue(g.UtilPct, u.hist)
+	}
+}
+
+// clearGPUs zeros existing GPU widgets without tearing them down (preserves
+// history if the exporter blips and then comes back).
+func (u *UI) clearGPUs(w *nodeWidgets) {
+	for _, idx := range w.gpuOrder {
+		gw := w.gpus[idx]
+		gw.header.SetText("")
+		gw.util.AddValue(0, u.hist)
+	}
+}
+
+// ---- threshold coloring -------------------------------------------------------
+
+// colorByPct returns a tview color tag (no brackets) for a 0-100 percentage.
+func colorByPct(v float64) string {
+	switch {
+	case v >= 90:
+		return "red"
+	case v >= 70:
+		return "yellow"
+	default:
+		return "green"
+	}
+}
+
+// colorByTemp returns a color tag for a temperature in °C.
+func colorByTemp(t float64) string {
+	switch {
+	case t >= 85:
+		return "red"
+	case t >= 75:
+		return "yellow"
+	default:
+		return "green"
+	}
+}
+
+// colorByLoad returns a color tag for a 1-min load average given the core count.
+func colorByLoad(load float64, ncores int) string {
+	if ncores <= 0 {
+		return "white"
+	}
+	r := load / float64(ncores)
+	switch {
+	case r >= 1.5:
+		return "red"
+	case r >= 1.0:
+		return "yellow"
+	default:
+		return "green"
 	}
 }
 
@@ -258,4 +378,14 @@ func humanRate(v float64) string {
 		return "0 B/s"
 	}
 	return human(v) + "/s"
+}
+
+func clampf(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
