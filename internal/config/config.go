@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -72,6 +73,46 @@ func (c *Config) HistoryLen() int {
 		return 60
 	}
 	return c.History
+}
+
+// DefaultPath returns the preferred path for a *new* config file:
+// $XDG_CONFIG_HOME/sparkmon/config.yaml, falling back to
+// ~/.config/sparkmon/config.yaml. Returns "" if neither $HOME nor
+// $XDG_CONFIG_HOME is set.
+func DefaultPath() string {
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "sparkmon", "config.yaml")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "sparkmon", "config.yaml")
+}
+
+// SearchPaths returns candidate config paths in lookup order.
+// The first one that exists on disk wins.
+func SearchPaths() []string {
+	var out []string
+	if p := DefaultPath(); p != "" {
+		out = append(out, p)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		out = append(out, filepath.Join(home, ".sparkmon", "config.yaml"))
+	}
+	out = append(out, "config.yaml")
+	return out
+}
+
+// Resolve picks the first existing path in SearchPaths(), or returns "" if
+// none exist.
+func Resolve() string {
+	for _, p := range SearchPaths() {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // Load reads and validates a config file.

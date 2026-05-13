@@ -25,13 +25,13 @@ toolkit). Inspired by [paul-aviles/NVIDIA-DGX-Spark-Dashboard](https://github.co
 
 | Path | What it is |
 |---|---|
-| `cmd/sparkmon/` | the TUI entrypoint |
+| `cmd/sparkmon/` | the binary entrypoint (subcommand router) |
+| `internal/cli/` | subcommands: `dashboard`, `deploy`, `teardown`, `health`, `version` |
 | `internal/config/` | config file + `-nodes` flag parsing |
 | `internal/metrics/` | HTTP scrape + Prometheus-text parser + per-node snapshots/rates |
 | `internal/ui/` | the `jig` dashboard |
+| `internal/exporters/docker-compose.yml` | `node_exporter` + `dcgm-exporter` stack — embedded in the binary, deployed to each Spark node |
 | `config.yaml.example` | sample config |
-| `node/docker-compose.yml` | `node_exporter` + `dcgm-exporter` — runs **on each Spark node** |
-| `scripts/deploy-exporters.sh` | push the exporter stack to the nodes over SSH |
 | `Justfile` | `just build`, `just run`, `just deploy-exporters`, … (needs [`just`](https://github.com/casey/just)) |
 
 ## Setup
@@ -44,26 +44,26 @@ Toolkit (DGX OS ships with it; otherwise see the
 [install guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
 verify with `docker run --rm --gpus all ubuntu nvidia-smi`).
 
-By hand on each node:
+From your workstation:
 
 ```bash
-git clone https://github.com/leonkozlowski/sparkmon.git
-cd sparkmon/node && docker compose up -d     # -> :9100 node_exporter, :9400 dcgm-exporter
-```
-
-…or push from your workstation:
-
-```bash
-./scripts/deploy-exporters.sh me@spark-01 me@spark-02
+sparkmon deploy me@spark-01 me@spark-02
 # or: just deploy-exporters "me@spark-01 me@spark-02"
 ```
 
-Quick check:
+This SSHes to each target, uploads the embedded `docker-compose.yml`, pulls the
+images, and brings the stack up. The compose file lives at
+`internal/exporters/docker-compose.yml` in this repo if you want to deploy by
+hand.
+
+Check that the exporters are reachable:
 
 ```bash
-curl -s http://spark-01:9100/metrics | head
-curl -s http://spark-01:9400/metrics | grep DCGM_FI_DEV_GPU_UTIL
+sparkmon health spark-01 spark-02
 ```
+
+Tear it down later with `sparkmon teardown me@spark-01 me@spark-02`
+(add `--purge` to also remove `~/sparkmon-exporters` on each node).
 
 ### 2. Run the dashboard
 
@@ -85,7 +85,8 @@ curl -fsSL https://raw.githubusercontent.com/leonkozlowski/sparkmon/main/install
 mkdir -p ~/.sparkmon
 cp /opt/sparkmon/config.yaml.example ~/.sparkmon/config.yaml
 # Edit with your node IPs: nano ~/.sparkmon/config.yaml
-# Run sparkmon: sparkmon up
+# Run the dashboard:
+sparkmon -config ~/.sparkmon/config.yaml
 ```
 
 #### Option B: Build from source
@@ -94,11 +95,11 @@ Needs Go 1.24+. Builds anywhere — your laptop, or one of the Spark nodes
 (`just build-arm` cross-compiles a `linux/arm64` binary).
 
 ```bash
-git clone https://github. com/leonkozlowski/ sparkmon.git
+git clone https://github.com/leonkozlowski/sparkmon.git
 cd sparkmon
 
-cp config. yaml.example config. yaml      # put your node IPs/hostnames in it
-go run ./cmd/sparkmon                    # or: just run   (or: just build && ./bin/ sparkmon)
+cp config.yaml.example config.yaml       # put your node IPs/hostnames in it
+go run ./cmd/sparkmon                    # or: just run   (or: just build && ./bin/sparkmon)
 ```
 
 No config file? Pass nodes inline:
@@ -108,8 +109,24 @@ go run ./cmd/sparkmon -nodes spark-01=192.168.1.101,spark-02=192.168.1.102
 # or: just demo "spark-01=192.168.1.101,spark-02=192.168.1.102"
 ```
 
-Flags: `-config <file>` (default `config.yaml`), `-nodes name=host,…`,
-`-interval 2s`.
+Dashboard flags: `-config <file>` (default `config.yaml`), `-nodes name=host,…`,
+`-interval 2s`, `-theme <name>`.
+
+### CLI
+
+`sparkmon` is one binary with subcommands. The dashboard runs by default.
+
+```text
+sparkmon                              # dashboard (= sparkmon dashboard)
+sparkmon deploy   me@spark-01 ...     # upload + bring up the exporter stack
+sparkmon teardown me@spark-01 ...     # stop the stack (--purge removes ~/sparkmon-exporters)
+sparkmon health   spark-01 ...        # probe TCP + /metrics on :9100 and :9400
+sparkmon version
+sparkmon help
+```
+
+`sparkmon deploy` and `teardown` shell out to the system `ssh` (so your
+`~/.ssh/config`, agent, and known hosts all work as you'd expect).
 
 ### Keys
 
@@ -135,15 +152,34 @@ local to your terminal rather than a shared web UI.
 
 ## Config
 
+`sparkmon` looks for a config file in this order; the first one that exists wins:
+
+1. `-config <path>` (explicit override)
+2. `$XDG_CONFIG_HOME/sparkmon/config.yaml`
+3. `~/.config/sparkmon/config.yaml`  ← recommended
+4. `~/.sparkmon/config.yaml`         ← legacy
+5. `./config.yaml`                    ← dev convenience
+
+Create one:
+
+```sh
+mkdir -p ~/.config/sparkmon
+cp config.yaml.example ~/.config/sparkmon/config.yaml
+$EDITOR ~/.config/sparkmon/config.yaml
+```
+
+Schema:
+
 ```yaml
-interval: 2s          # poll cadence
-history: 60           # points kept per sparkline
+interval: 2s              # poll cadence
+history: 60               # points kept per sparkline
+theme: tokyonight-night   # optional; any of the 26 built-in jig themes
 nodes:
   - name: spark-01
     host: 192.168.1.101
   - name: spark-02
     host: 192.168.1.102
-    # node_port: 9100   # override if the exporters aren't on the defaults
+    # node_port: 9100     # override if the exporters aren't on the defaults
     # gpu_port: 9400
 ```
 
@@ -152,7 +188,7 @@ nodes:
 - **DGX Spark is ARM64.** The exporter images (`prom/node-exporter`,
   `nvcr.io/nvidia/k8s/dcgm-exporter`) publish `linux/arm64`, and `just build-arm`
   builds the TUI for the nodes too.
-- **`dcgm-exporter` GPU access.** `node/docker-compose.yml` uses the Compose
+- **`dcgm-exporter` GPU access.** `internal/exporters/docker-compose.yml` uses the Compose
   `deploy.resources.reservations.devices` syntax; swap it for `runtime: nvidia`
   if your Docker is set up the older way.
 - **No GPU metrics?** If `dcgm-exporter` can't enumerate the GB10 on your DGX OS

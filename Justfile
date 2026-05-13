@@ -31,7 +31,16 @@ build-arm:
 
 # Deploy node_exporter + dcgm-exporter to the nodes. Usage: just deploy-exporters "me@host1 me@host2"
 deploy-exporters targets:
-    ./scripts/deploy-exporters.sh {{targets}}
+    go run ./cmd/sparkmon deploy {{targets}}
+
+# Stop the exporter stack on the nodes. Pass --purge to also delete remote dir.
+# Usage: just teardown-exporters "me@host1 me@host2"
+teardown-exporters targets:
+    go run ./cmd/sparkmon teardown {{targets}}
+
+# Probe exporter health. Usage: just health "spark-01 spark-02"
+health targets:
+    go run ./cmd/sparkmon health {{targets}}
 
 # Build debian packages for Ubuntu/Debian
 deb:

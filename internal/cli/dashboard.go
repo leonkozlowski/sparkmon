@@ -1,0 +1,128 @@
+package cli
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/atterpac/jig/theme"
+	"github.com/atterpac/jig/theme/themes"
+	"github.com/leonkozlowski/sparkmon/internal/config"
+	"github.com/leonkozlowski/sparkmon/internal/metrics"
+	"github.com/leonkozlowski/sparkmon/internal/ui"
+)
+
+// Dashboard runs the live cluster dashboard.
+func Dashboard(args []string) int {
+	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	cfgPath := fs.String("config", "", "path to config file (defaults to the first existing of: $XDG_CONFIG_HOME/sparkmon/config.yaml, ~/.config/sparkmon/config.yaml, ~/.sparkmon/config.yaml, ./config.yaml)")
+	nodesFlag := fs.String("nodes", "", "comma-separated name=host pairs (overrides config nodes), e.g. spark-01=10.0.0.1,spark-02=10.0.0.2")
+	intervalFlag := fs.Duration("interval", 0, "poll interval (overrides config)")
+	themeNameFlag := fs.String("theme", "", "theme name (overrides config file)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	if err := runDashboard(*cfgPath, *nodesFlag, *intervalFlag, *themeNameFlag); err != nil {
+		fmt.Fprintln(os.Stderr, "sparkmon:", err)
+		return 1
+	}
+	return 0
+}
+
+func runDashboard(cfgPath, nodesFlag string, intervalFlag time.Duration, themeName string) error {
+	resolved := cfgPath
+	if resolved == "" {
+		resolved = config.Resolve()
+	}
+
+	var cfg *config.Config
+	if resolved != "" {
+		c, err := config.Load(resolved)
+		if err != nil {
+			return err
+		}
+		cfg = c
+	} else {
+		if nodesFlag == "" {
+			return fmt.Errorf("no config file found in %v\n(create one at %s, or pass -config <file> or -nodes name=host,…)",
+				config.SearchPaths(), config.DefaultPath())
+		}
+		cfg = config.Default()
+	}
+	if nodesFlag != "" {
+		ns, err := config.ParseNodesFlag(nodesFlag)
+		if err != nil {
+			return fmt.Errorf("-nodes: %w", err)
+		}
+		cfg.Nodes = ns
+	}
+	if intervalFlag > 0 {
+		cfg.Interval = intervalFlag.String()
+	}
+	if len(cfg.Nodes) == 0 {
+		return fmt.Errorf("no nodes configured")
+	}
+
+	chosen := cfg.Theme
+	if themeName != "" {
+		chosen = themeName
+	}
+	selected := themes.Get(chosen)
+	if selected == nil {
+		fmt.Fprintf(os.Stderr, "Warning: theme %q not found, using default\n", chosen)
+		selected = themes.Default()
+	}
+	theme.SetProvider(selected)
+
+	every := cfg.PollEvery()
+	coll := metrics.NewCollector(cfg.Nodes, clampDur(every, time.Second, 5*time.Second))
+	app := ui.New(cfg, cfg.Nodes)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	force := make(chan struct{}, 1)
+	app.SetOnForceRefresh(func() {
+		select {
+		case force <- struct{}{}:
+		default:
+		}
+	})
+
+	go func() {
+		poll := func() {
+			cctx, c := context.WithTimeout(ctx, every)
+			snaps := coll.Collect(cctx)
+			c()
+			app.Submit(snaps)
+		}
+		poll()
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				poll()
+			case <-force:
+				poll()
+			}
+		}
+	}()
+
+	return app.Run()
+}
+
+func clampDur(d, lo, hi time.Duration) time.Duration {
+	if d < lo {
+		return lo
+	}
+	if d > hi {
+		return hi
+	}
+	return d
+}
