@@ -1,0 +1,13 @@
+# local config
+config.yaml
+node/.env
+
+# build output
+/bin/
+/sparkmon
+
+# os / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/

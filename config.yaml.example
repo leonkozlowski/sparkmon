@@ -1,0 +1,18 @@
+# sparkmon config — copy to config.yaml and edit, or skip the file and use
+#   sparkmon -nodes spark-01=192.168.1.101,spark-02=192.168.1.102
+
+# how often to poll each node
+interval: 2s
+
+# how many points each sparkline keeps
+history: 60
+
+# your DGX Spark nodes. `host` is enough when the exporters run on the default
+# ports (node_exporter :9100, dcgm-exporter :9400); override per node otherwise.
+nodes:
+  - name: spark-01
+    host: 192.168.1.101
+  - name: spark-02
+    host: 192.168.1.102
+    # node_port: 9100
+    # gpu_port: 9400

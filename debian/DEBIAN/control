@@ -1,0 +1,19 @@
+Package: sparkmon
+Version: 0.1.0
+Architecture: amd64
+Maintainer: Leo Kozlowski <leonkozlowski@anomalyco.com>
+Section: admin
+Priority: optional
+Homepage: https://github.com/leonkozlowski/sparkmon
+Description: Terminal-based monitoring dashboard for NVIDIA DGX Spark clusters
+ Sparkmon provides a real-time terminal UI for monitoring multi-node DGX
+ Spark clusters by polling node_exporter and dcgm-exporter metrics.
+ .
+ Features:
+  - Real-time CPU, memory, disk, and network monitoring
+  - GPU utilization, temperature, and memory tracking
+  - Side-by-side cluster visualization
+  - No browser or external dependencies required
+ .
+ Useful for monitoring DGX Spark cluster infrastructure,
+ debugging performance issues, and visualizing cluster health.

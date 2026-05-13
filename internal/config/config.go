@@ -1,0 +1,121 @@
+// Package config loads sparkmon's runtime configuration: the list of DGX Spark
+// nodes to watch and a few display knobs.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Node is one DGX Spark host running node_exporter (:9100) and dcgm-exporter (:9400).
+type Node struct {
+	Name     string `yaml:"name"`      // display name; falls back to Host
+	Host     string `yaml:"host"`      // hostname or IP, required
+	NodePort int    `yaml:"node_port"` // node_exporter port (default 9100)
+	GPUPort  int    `yaml:"gpu_port"`  // dcgm-exporter port (default 9400)
+}
+
+// Display returns the name to show for this node.
+func (n Node) Display() string {
+	if strings.TrimSpace(n.Name) != "" {
+		return n.Name
+	}
+	return n.Host
+}
+
+// NodeURL is the node_exporter /metrics endpoint.
+func (n Node) NodeURL() string {
+	return fmt.Sprintf("http://%s:%d/metrics", n.Host, portOr(n.NodePort, 9100))
+}
+
+// GPUURL is the dcgm-exporter /metrics endpoint.
+func (n Node) GPUURL() string {
+	return fmt.Sprintf("http://%s:%d/metrics", n.Host, portOr(n.GPUPort, 9400))
+}
+
+func portOr(p, def int) int {
+	if p <= 0 {
+		return def
+	}
+	return p
+}
+
+// Config is the parsed config file.
+type Config struct {
+	Interval string `yaml:"interval"` // poll interval, e.g. "2s"
+	History  int    `yaml:"history"`  // points kept per sparkline
+	Theme    string `yaml:"theme"`    // jig theme name (optional)
+	Nodes    []Node `yaml:"nodes"`
+}
+
+// Default returns a Config with sane defaults and no nodes.
+func Default() *Config {
+	return &Config{Interval: "2s", History: 60}
+}
+
+// PollEvery is the validated poll interval.
+func (c *Config) PollEvery() time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(c.Interval))
+	if err != nil || d < 250*time.Millisecond {
+		return 2 * time.Second
+	}
+	return d
+}
+
+// HistoryLen is the validated sparkline history length.
+func (c *Config) HistoryLen() int {
+	if c.History <= 1 {
+		return 60
+	}
+	return c.History
+}
+
+// Load reads and validates a config file.
+func Load(path string) (*Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	c := Default()
+	if err := yaml.Unmarshal(b, c); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if strings.TrimSpace(c.Interval) == "" {
+		c.Interval = "2s"
+	}
+	for i := range c.Nodes {
+		if strings.TrimSpace(c.Nodes[i].Host) == "" {
+			return nil, fmt.Errorf("%s: node %d is missing 'host'", path, i+1)
+		}
+	}
+	return c, nil
+}
+
+// ParseNodesFlag parses a comma-separated "name=host" list from the -nodes flag.
+// "host" alone (no "=") is allowed; the host doubles as the name.
+func ParseNodesFlag(s string) ([]Node, error) {
+	var out []Node
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, host, ok := strings.Cut(part, "=")
+		if !ok {
+			host, name = part, ""
+		}
+		host = strings.TrimSpace(host)
+		if host == "" {
+			return nil, fmt.Errorf("bad node spec %q (want name=host)", part)
+		}
+		out = append(out, Node{Name: strings.TrimSpace(name), Host: host})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no nodes parsed from %q", s)
+	}
+	return out, nil
+}
