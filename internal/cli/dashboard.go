@@ -21,18 +21,19 @@ func Dashboard(args []string) int {
 	nodesFlag := fs.String("nodes", "", "comma-separated name=host pairs (overrides config nodes), e.g. spark-01=10.0.0.1,spark-02=10.0.0.2")
 	intervalFlag := fs.Duration("interval", 0, "poll interval (overrides config)")
 	themeNameFlag := fs.String("theme", "", "theme name (overrides config file)")
+	vllmPortFlag := fs.Int("vllm-port", 0, "scrape vLLM /metrics on this port for every node (e.g. 8000); 0 disables")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	if err := runDashboard(*cfgPath, *nodesFlag, *intervalFlag, *themeNameFlag); err != nil {
+	if err := runDashboard(*cfgPath, *nodesFlag, *intervalFlag, *themeNameFlag, *vllmPortFlag); err != nil {
 		fmt.Fprintln(os.Stderr, "sparkmon:", err)
 		return 1
 	}
 	return 0
 }
 
-func runDashboard(cfgPath, nodesFlag string, intervalFlag time.Duration, themeName string) error {
+func runDashboard(cfgPath, nodesFlag string, intervalFlag time.Duration, themeName string, vllmPort int) error {
 	resolved := cfgPath
 	if resolved == "" {
 		resolved = config.Resolve()
@@ -64,6 +65,14 @@ func runDashboard(cfgPath, nodesFlag string, intervalFlag time.Duration, themeNa
 	}
 	if len(cfg.Nodes) == 0 {
 		return fmt.Errorf("no nodes configured")
+	}
+	// --vllm-port applies to every node, which is what you want with --nodes
+	// (that flag can't carry a per-node port). For per-node ports, use a config
+	// file with `vllm_port:` on each node instead.
+	if vllmPort > 0 {
+		for i := range cfg.Nodes {
+			cfg.Nodes[i].VLLMPort = vllmPort
+		}
 	}
 
 	chosen := cfg.Theme

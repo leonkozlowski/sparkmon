@@ -27,6 +27,11 @@ type nodeState struct {
 	netTx     float64
 	diskR     float64
 	diskW     float64
+
+	// vLLM counter state for throughput rates
+	vllmHavePrev bool
+	vllmPrevTime time.Time
+	prevGenTok   float64
 }
 
 // Collector scrapes a fixed set of nodes.
@@ -108,7 +113,51 @@ func (c *Collector) collectOne(ctx context.Context, st *nodeState) Snapshot {
 		s.GPUUp = true
 		s.GPUs = parseGPUs(gf)
 	}
+
+	if url := st.cfg.VLLMURL(); url != "" {
+		s.InferOn = true
+		if vf, err := c.scrape(ctx, url); err != nil {
+			s.InferErr = err.Error()
+		} else {
+			s.InferUp = true
+			fillInfer(&s, vf, st, time.Now())
+		}
+	}
 	return s
+}
+
+// fillInfer reads vLLM's Prometheus metrics. The token counters are turned into
+// per-second rates the same way host counters are.
+func fillInfer(s *Snapshot, f family, st *nodeState, now time.Time) {
+	s.ReqRunning = f.sum("vllm:num_requests_running")
+	s.ReqWaiting = f.sum("vllm:num_requests_waiting")
+	if v, ok := f.first("vllm:gpu_cache_usage_perc"); ok {
+		s.KVCachePct = clampf(v*100, 0, 100)
+	}
+	s.InferModel = vllmModel(f)
+
+	gen := f.sum("vllm:generation_tokens_total")
+	if st.vllmHavePrev {
+		if dt := now.Sub(st.vllmPrevTime).Seconds(); dt > 0 {
+			s.GenTokPerSec = nonneg(gen-st.prevGenTok) / dt
+		}
+	}
+	st.vllmHavePrev = true
+	st.vllmPrevTime = now
+	st.prevGenTok = gen
+}
+
+// vllmModel pulls the served model name from the "model_name" label that vLLM
+// attaches to its metrics.
+func vllmModel(f family) string {
+	for _, name := range []string{"vllm:num_requests_running", "vllm:generation_tokens_total", "vllm:num_requests_waiting"} {
+		for _, sm := range f[name] {
+			if m := sm.Labels["model_name"]; m != "" {
+				return m
+			}
+		}
+	}
+	return ""
 }
 
 func (c *Collector) scrape(ctx context.Context, url string) (family, error) {
