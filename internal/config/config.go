@@ -18,6 +18,7 @@ type Node struct {
 	Host     string `yaml:"host"`      // hostname or IP, required
 	NodePort int    `yaml:"node_port"` // node_exporter port (default 9100)
 	GPUPort  int    `yaml:"gpu_port"`  // dcgm-exporter port (default 9400)
+	VLLMPort int    `yaml:"vllm_port"` // vLLM /metrics port (e.g. 8000); 0 disables workload scraping
 }
 
 // Display returns the name to show for this node.
@@ -36,6 +37,14 @@ func (n Node) NodeURL() string {
 // GPUURL is the dcgm-exporter /metrics endpoint.
 func (n Node) GPUURL() string {
 	return fmt.Sprintf("http://%s:%d/metrics", n.Host, portOr(n.GPUPort, 9400))
+}
+
+// VLLMURL is the vLLM /metrics endpoint, or "" if no vllm_port is configured.
+func (n Node) VLLMURL() string {
+	if n.VLLMPort <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%d/metrics", n.Host, n.VLLMPort)
 }
 
 func portOr(p, def int) int {

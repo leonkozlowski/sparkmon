@@ -10,9 +10,11 @@ import (
 // encodes value/maxValue, the color encodes the threshold band of that value.
 type Spark struct {
 	*tview.Box
-	values []float64
-	maxVal float64 // 0 = auto-scale to the max of visible values
-	label  string
+	values  []float64
+	maxVal  float64 // 0 = auto-scale to the max of visible values
+	label   string
+	current string
+	unit    string
 	// thresholds in the same units as maxVal; default = % thresholds (70/90 of max).
 	warn float64
 	crit float64
@@ -28,6 +30,13 @@ func (s *Spark) SetLabel(l string) *Spark { s.label = l; return s }
 
 // SetMaxValue sets the value mapped to a full-height bar. Zero means auto-scale.
 func (s *Spark) SetMaxValue(m float64) *Spark { s.maxVal = m; return s }
+
+// SetCurrent sets the current value display (e.g. "42%").
+func (s *Spark) SetCurrent(val string, unit string) *Spark {
+	s.current = val
+	s.unit = unit
+	return s
+}
 
 // SetThresholds sets the absolute (warn, crit) value cutoffs for coloring.
 // Zero means "use 70% / 90% of the effective max."
@@ -58,11 +67,24 @@ func (s *Spark) Draw(screen tcell.Screen) {
 
 	plotTop := y
 	plotH := h
+	linesUsed := 0
+
+	// Draw label if present
 	if s.label != "" && h > 1 {
 		drawLabel(screen, x, y, w, s.label)
 		plotTop = y + 1
 		plotH = h - 1
+		linesUsed++
 	}
+
+	// Draw current value if present (above the sparkline)
+	if s.current != "" && h > 2 && linesUsed < h {
+		drawCurrentValue(screen, x, plotTop, w, s.current, s.unit)
+		plotTop++
+		plotH--
+		linesUsed++
+	}
+
 	if plotH <= 0 || len(s.values) == 0 {
 		return
 	}
@@ -124,6 +146,12 @@ func (s *Spark) Draw(screen tcell.Screen) {
 type CoreGrid struct {
 	*tview.Box
 	cores []*Spark
+}
+
+// SparklineStatus holds the current value and unit for a sparkline
+type SparklineStatus struct {
+	Value float64
+	Unit  string
 }
 
 // NewCoreGrid constructs an empty CoreGrid.
@@ -208,6 +236,19 @@ func drawLabel(screen tcell.Screen, x, y, w int, label string) {
 	style := tcell.StyleDefault.Foreground(tcell.ColorGray)
 	col := x
 	for _, r := range label {
+		if col >= x+w {
+			return
+		}
+		screen.SetContent(col, y, r, nil, style)
+		col++
+	}
+}
+
+func drawCurrentValue(screen tcell.Screen, x, y, w int, value, unit string) {
+	style := tcell.StyleDefault.Foreground(tcell.ColorWhite).Bold(true)
+	col := x
+	text := value + " " + unit
+	for _, r := range text {
 		if col >= x+w {
 			return
 		}

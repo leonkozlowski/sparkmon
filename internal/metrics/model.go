@@ -42,6 +42,17 @@ type Snapshot struct {
 
 	// GPU metrics (from dcgm-exporter)
 	GPUs []GPU
+
+	// inference workload (from vLLM /metrics); only populated when a node has
+	// vllm_port set.
+	InferOn      bool    // a vLLM endpoint is configured for this node
+	InferUp      bool    // vLLM /metrics responded
+	InferErr     string  // vLLM scrape error, if any
+	InferModel   string  // served model name
+	ReqRunning   float64 // requests currently decoding
+	ReqWaiting   float64 // requests queued (backpressure when > 0)
+	KVCachePct   float64 // 0..100, GPU KV-cache occupancy
+	GenTokPerSec float64 // generation throughput, derived from the counter
 }
 
 // UpGPUs is the number of GPUs reported across the node.
