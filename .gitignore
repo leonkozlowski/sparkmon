@@ -5,6 +5,8 @@ node/.env
 # build output
 /bin/
 /sparkmon
+/dist/
+*.deb
 
 # os / editor cruft
 .DS_Store

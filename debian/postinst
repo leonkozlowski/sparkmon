@@ -1,38 +1,13 @@
 #!/bin/bash
 # Post-installation script for sparkmon
-
 set -e
 
-# Ensure sparkmon group and user exist for multi-user setups
-if ! getent group sparkmon >/dev/null 2>&1; then
-    addgroup --system sparkmon || true
-fi
-
-if ! getent passwd sparkmon >/dev/null 2>&1; then
-    adduser --system --ingroup sparkmon --home /var/lib/.sparkmon sparkmon || true
-fi
-
-# Create and set permissions on data directory  
-mkdir -p /var/lib/sparkmon
-chown sparkmon:sparkmon /var/lib/sparkmon
-chmod 750 /var/lib/sparkmon
-
-# Create systemd service for sparkmon (optional, for background monitoring)
-if [ -f /etc/systemd/system/sparkmon.service ]; then
-    systemctl daemon-reload || true
-    systemctl enable sparkmon || true
-fi
-
-# Install shell completion if available
-mkdir -p /etc/bash_completion.d/
-if [ -f /usr/share/bash-completion/completions/sparkmon ]; then
-    cp /usr/share/bash-completion/completions/sparkmon /etc/bash_completion.d/sparkmon || true
-fi
-
-echo "Sparkmon installed successfully!"
-echo "Configure nodes in /etc/sparkmon/config.yaml or run:"
-echo "  sparkmon up --help"
-echo "  sparkmon nodes add name=host"
+echo "sparkmon installed."
 echo ""
-echo "For cluster setup, use:"
-echo "  sparkmon deploy user@node1,user@node2"
+echo "Quick start:"
+echo "  1. Deploy the exporters to your nodes:   sparkmon deploy me@spark-01 me@spark-02"
+echo "  2. Check they're reachable:              sparkmon health spark-01 spark-02"
+echo "  3. Run the dashboard:                    sparkmon -nodes spark-01=<ip>,spark-02=<ip>"
+echo ""
+echo "Sample config: /etc/sparkmon/config.yaml.example"
+echo "  (copy to ~/.config/sparkmon/config.yaml and edit, then plain 'sparkmon' works)"
