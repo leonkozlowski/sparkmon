@@ -1,7 +1,7 @@
 Package: sparkmon
 Version: 0.1.0
 Architecture: amd64
-Maintainer: Leo Kozlowski <leonkozlowski@anomalyco.com>
+Maintainer: Leon Kozlowski <leonkozlowski@gmail.com>
 Section: admin
 Priority: optional
 Homepage: https://github.com/leonkozlowski/sparkmon
