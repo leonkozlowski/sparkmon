@@ -1,46 +1,77 @@
 # sparkmon
 
-A terminal dashboard for a small **NVIDIA DGX Spark** cluster. It polls
-`node_exporter` (host metrics) and NVIDIA `dcgm-exporter` (GPU metrics) on each
-node over plain HTTP and renders a unified, side-by-side view — no Prometheus,
-no Grafana, no browser.
+A terminal dashboard for a small **NVIDIA DGX Spark** cluster — host, GPU, and
+**vLLM inference** metrics for every node on one screen. It polls
+`node_exporter`, NVIDIA `dcgm-exporter`, and (optionally) vLLM's `/metrics`
+over plain HTTP. No Prometheus, no Grafana, no browser.
+
+![sparkmon](docs/dashboard.png)
 
 Built with [`jig`](https://github.com/atterpac/jig) (a `tview`-based TUI
 toolkit). Inspired by [paul-aviles/NVIDIA-DGX-Spark-Dashboard](https://github.com/paul-aviles/NVIDIA-DGX-Spark-Dashboard).
 
+## Why
+
+The DGX Spark's GB10 superchip shares one ~128 GB unified LPDDR5X pool between
+the Grace CPU and the Blackwell GPU. That changes what monitoring matters:
+memory pressure is a *node* problem (an over-eager vLLM config can hard-lock
+the box, not just OOM the process), and thermal/power throttling on the compact
+chassis quietly eats your tok/s. sparkmon is built around exactly those
+signals — unified memory %, GPU temp/power against the GB10 envelope, SM-clock
+throttle detection, and live vLLM serving stats — without standing up a
+Prometheus stack for a two-node cluster.
+
+## Install
+
+### One-line install (Linux & macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leonkozlowski/sparkmon/main/install.sh | bash
 ```
-   ┌──────────── spark-01 ────────────┐  ┌──────────── spark-02 ────────────┐
-   │ ● up   uptime 3d 4h               │  │ ● up   uptime 3d 4h               │
-   │ CPU  37%  · 20 cores · load 1.4 …  │  │ CPU  62%  · 20 cores · load 3.1 … │
-   │ CPU %  ▁▂▃▅▇▆▅▄▃▂▃▅▇█▆▄▃▂▁         │  │ CPU %  ▃▅▇█▇▆▇█▇▆▅▄▅▆▇█▇▆▅▄       │
-   │ MEM  [█████░░░░░░░░░░] 31%         │  │ MEM  [████████░░░░░░] 58%         │
-   │ GPU                               │  │ GPU                               │
-   │  gpu0 NVIDIA GB10                  │  │  gpu0 NVIDIA GB10                 │
-   │   util  41%  vram 18.3/119.7 GiB …│  │   util  88%  vram 71.2/119.7 GiB …│
-   │ net rx ▁▁▂▁▃▂▁  net tx ▁▁▁▂▁▁     │  │ net rx ▂▃▅▃▂▁▂  net tx ▁▂▁▁▁      │
-   └───────────────────────────────────┘  └───────────────────────────────────┘
+
+Downloads the right prebuilt binary for your OS/arch from the latest GitHub
+release into `/usr/local/bin` (falls back to building with your Go toolchain if
+no release asset matches). Options:
+
+```bash
+# custom location, no sudo needed
+curl -fsSL https://raw.githubusercontent.com/leonkozlowski/sparkmon/main/install.sh | bash -s -- --bin-dir ~/bin
+# pin a version
+curl -fsSL https://raw.githubusercontent.com/leonkozlowski/sparkmon/main/install.sh | bash -s -- --version v0.1.0
 ```
 
-## What's where
+### go install
 
-| Path | What it is |
-|---|---|
-| `cmd/sparkmon/` | the binary entrypoint (subcommand router) |
-| `internal/cli/` | subcommands: `dashboard`, `deploy`, `teardown`, `health`, `version` |
-| `internal/config/` | config file + `-nodes` flag parsing |
-| `internal/metrics/` | HTTP scrape + Prometheus-text parser + per-node snapshots/rates |
-| `internal/ui/` | the `jig` dashboard |
-| `internal/exporters/docker-compose.yml` | `node_exporter` + `dcgm-exporter` stack — embedded in the binary, deployed to each Spark node |
-| `config.yaml.example` | sample config |
-| `Justfile` | `just build`, `just run`, `just deploy-exporters`, … (needs [`just`](https://github.com/casey/just)) |
+```bash
+go install github.com/leonkozlowski/sparkmon/cmd/sparkmon@latest
+```
 
-## Setup
+### From source
+
+Needs Go 1.25+. Builds anywhere — your laptop, or one of the Spark nodes.
+
+```bash
+git clone https://github.com/leonkozlowski/sparkmon.git
+cd sparkmon
+just build            # → bin/sparkmon        (or: go build -o bin/sparkmon ./cmd/sparkmon)
+just build-arm        # → bin/sparkmon-linux-arm64, for the DGX Spark nodes
+```
+
+### Debian package
+
+```bash
+just deb              # package for this machine's arch → dist/sparkmon-<arch>.deb
+just deb-arm          # package for the Spark nodes (arm64)
+sudo apt install ./dist/sparkmon-arm64.deb
+```
+
+## Quick start
 
 ### 1. Run the exporters on each DGX Spark node
 
-These are the only things that need to run *on* the nodes (two small
-containers). Prereqs per node: Docker + Compose plugin, and the NVIDIA Container
-Toolkit (DGX OS ships with it; otherwise see the
+These are the only things that run *on* the nodes (two small containers).
+Prereqs per node: Docker + Compose plugin, and the NVIDIA Container Toolkit
+(DGX OS ships with it; otherwise see the
 [install guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
 verify with `docker run --rm --gpus all ubuntu nvidia-smi`).
 
@@ -48,15 +79,11 @@ From your workstation:
 
 ```bash
 sparkmon deploy me@spark-01 me@spark-02
-# or: just deploy-exporters "me@spark-01 me@spark-02"
 ```
 
-This SSHes to each target, uploads the embedded `docker-compose.yml`, pulls the
-images, and brings the stack up. The compose file lives at
-`internal/exporters/docker-compose.yml` in this repo if you want to deploy by
-hand.
-
-Check that the exporters are reachable:
+This SSHes to each target, uploads the embedded `docker-compose.yml`
+(`internal/exporters/docker-compose.yml` in this repo, if you'd rather deploy
+by hand), pulls the images, and brings the stack up. Then check reachability:
 
 ```bash
 sparkmon health spark-01 spark-02
@@ -67,54 +94,86 @@ Tear it down later with `sparkmon teardown me@spark-01 me@spark-02`
 
 ### 2. Run the dashboard
 
-#### Option A: Install with curl (Recommended)
-
-**One-line install:**
+No config file needed to try it:
 
 ```bash
-# Install to /usr/local/bin/sparkmon
-curl -fsSL https://raw.githubusercontent.com/leonkozlowski/sparkmon/main/install.sh | bash
-# Or to custom location:
-curl -fsSL https://raw.githubusercontent.com/leonkozlowski/sparkmon/main/install.sh | bash -s -- --bin-dir ~/bin --install-dir ~/.sparkmon
+sparkmon -nodes spark-01=192.168.1.101,spark-02=192.168.1.102
+# serving LLMs? add the vLLM metrics port:
+sparkmon -nodes spark-01=192.168.1.101,spark-02=192.168.1.102 -vllm-port 8000
 ```
 
-**Quick start:**
+For everyday use, create a config once and then plain `sparkmon` works:
 
 ```bash
-# Copy and edit config
-mkdir -p ~/.sparkmon
-cp /opt/sparkmon/config.yaml.example ~/.sparkmon/config.yaml
-# Edit with your node IPs: nano ~/.sparkmon/config.yaml
-# Run the dashboard:
-sparkmon -config ~/.sparkmon/config.yaml
+mkdir -p ~/.config/sparkmon
+curl -fsSL https://raw.githubusercontent.com/leonkozlowski/sparkmon/main/config.yaml.example \
+  -o ~/.config/sparkmon/config.yaml
+$EDITOR ~/.config/sparkmon/config.yaml    # put your node IPs in it
+sparkmon
 ```
 
-#### Option B: Build from source
+## What it shows, per node
 
-Needs Go 1.24+. Builds anywhere — your laptop, or one of the Spark nodes
-(`just build-arm` cross-compiles a `linux/arm64` binary).
+- **Status line** — GPU model, node uptime, scrape freshness, plus a red
+  `THROTTLING` badge when a busy GPU's SM clock sags well below its observed
+  peak (the tell for thermal/power throttling).
+- **Health bar** — a 0–100 score folding in CPU/memory/disk pressure, GPU
+  temperature, and throttling.
+- **2×2 KPI cards** — GPU util, temperature, power, and unified memory %, each
+  with a trend arrow and sparkline. Thresholds are tuned to the GB10 envelope
+  (temp warns at 80 °C, power at 110 W, memory at 80 %). Memory is shown once,
+  unified: on GB10, "VRAM" and system RAM are the same physical pool.
+- **Per-GPU line** — util, temp, SM clock, power draw for each GPU.
+- **vLLM serving line + tok/s graph** *(when a `vllm_port` is configured)* —
+  served model name, running/waiting request counts (waiting turns yellow:
+  backpressure), KV-cache utilization %, and live generation tok/s.
+- **Per-core CPU grid**, **network B/s**, and **disk B/s** graphs.
 
-```bash
-git clone https://github.com/leonkozlowski/sparkmon.git
-cd sparkmon
+The top bar aggregates the cluster: nodes up, GPU count, total power draw, and
+peak GPU temperature. A node that stops responding flips to `DOWN` with the
+error, and recovers automatically.
 
-cp config.yaml.example config.yaml       # put your node IPs/hostnames in it
-go run ./cmd/sparkmon                    # or: just run   (or: just build && ./bin/sparkmon)
+### Keys
+
+- `r` — refresh now
+- `t` — cycle theme (26 built-in `jig` themes)
+- `q` / `Ctrl-C` — quit
+
+## Configuration
+
+`sparkmon` looks for a config file in this order; the first that exists wins:
+
+1. `-config <path>` (explicit override)
+2. `$XDG_CONFIG_HOME/sparkmon/config.yaml`
+3. `~/.config/sparkmon/config.yaml`  ← recommended
+4. `~/.sparkmon/config.yaml`         ← legacy
+5. `./config.yaml`                   ← dev convenience
+
+Schema (see [`config.yaml.example`](config.yaml.example)):
+
+```yaml
+interval: 1s              # poll cadence; 1s is fine over a LAN/Tailscale
+timeout: 10s              # per-scrape budget (default: max(5s, 4×interval), ≤30s)
+history: 60               # points kept per sparkline
+theme: tokyonight-night   # optional; any built-in jig theme
+nodes:
+  - name: spark-01
+    host: 192.168.1.101
+    vllm_port: 8000       # scrape vLLM /metrics: tok/s, queue depth, KV-cache
+  - name: spark-02
+    host: 192.168.1.102
+    # node_port: 9100     # override if the exporters aren't on the defaults
+    # gpu_port: 9400
 ```
 
-No config file? Pass nodes inline:
+Dashboard flags (each overrides the config file): `-config <file>`,
+`-nodes name=host,…`, `-interval 2s`, `-theme <name>`, `-vllm-port 8000`
+(applies to every node; use per-node `vllm_port:` in the config for mixed
+setups).
 
-```bash
-go run ./cmd/sparkmon -nodes spark-01=192.168.1.101,spark-02=192.168.1.102
-# or: just demo "spark-01=192.168.1.101,spark-02=192.168.1.102"
-```
+## CLI
 
-Dashboard flags: `-config <file>` (default `config.yaml`), `-nodes name=host,…`,
-`-interval 2s`, `-theme <name>`.
-
-### CLI
-
-`sparkmon` is one binary with subcommands. The dashboard runs by default.
+`sparkmon` is one binary with subcommands; the dashboard runs by default.
 
 ```text
 sparkmon                              # dashboard (= sparkmon dashboard)
@@ -125,78 +184,47 @@ sparkmon version
 sparkmon help
 ```
 
-`sparkmon deploy` and `teardown` shell out to the system `ssh` (so your
-`~/.ssh/config`, agent, and known hosts all work as you'd expect).
+`deploy` and `teardown` shell out to the system `ssh`, so your `~/.ssh/config`,
+agent, and known hosts all work as you'd expect.
 
-### Keys
+## What's where
 
-- `r` — refresh now
-- `t` — cycle theme (from `jig`)
-- `q` / `Ctrl-C` — quit
-
-## What it shows, per node
-
-- **Status line:** up/down, uptime, CPU %, core count, 1-min load, memory
-  used/total (%), `/` filesystem %, current disk and network throughput.
-- **CPU % sparkline** — derived from `node_cpu_seconds_total` deltas.
-- **Memory bar.**
-- **GPU block** — per GPU (from `dcgm-exporter`): utilization %, framebuffer
-  VRAM used/total, temperature, power draw, SM clock.
-- **Net RX / TX sparklines** — summed over physical interfaces.
-
-All nodes are shown together on one screen (one column each), so it works
-"cross-Spark" the same way a Prometheus + Grafana setup would — same exporters,
-same metrics. The trade-offs vs. that stack: no long-term history (a sparkline
-only holds the last `history` points, 60 by default), no alerting, and it's
-local to your terminal rather than a shared web UI.
-
-## Config
-
-`sparkmon` looks for a config file in this order; the first one that exists wins:
-
-1. `-config <path>` (explicit override)
-2. `$XDG_CONFIG_HOME/sparkmon/config.yaml`
-3. `~/.config/sparkmon/config.yaml`  ← recommended
-4. `~/.sparkmon/config.yaml`         ← legacy
-5. `./config.yaml`                    ← dev convenience
-
-Create one:
-
-```sh
-mkdir -p ~/.config/sparkmon
-cp config.yaml.example ~/.config/sparkmon/config.yaml
-$EDITOR ~/.config/sparkmon/config.yaml
-```
-
-Schema:
-
-```yaml
-interval: 2s              # poll cadence
-history: 60               # points kept per sparkline
-theme: tokyonight-night   # optional; any of the 26 built-in jig themes
-nodes:
-  - name: spark-01
-    host: 192.168.1.101
-  - name: spark-02
-    host: 192.168.1.102
-    # node_port: 9100     # override if the exporters aren't on the defaults
-    # gpu_port: 9400
-```
+| Path | What it is |
+|---|---|
+| `cmd/sparkmon/` | the binary entrypoint (subcommand router) |
+| `internal/cli/` | subcommands: `dashboard`, `deploy`, `teardown`, `health`, `version` |
+| `internal/config/` | config file + flag parsing |
+| `internal/metrics/` | HTTP scrape + Prometheus-text parser + per-node snapshots/rates |
+| `internal/ui/` | the `jig` dashboard |
+| `internal/exporters/docker-compose.yml` | `node_exporter` + `dcgm-exporter` stack — embedded in the binary |
+| `Justfile` | `just build`, `just deb`, … (needs [`just`](https://github.com/casey/just)) |
+| `install.sh` | the curl installer |
 
 ## Notes
 
 - **DGX Spark is ARM64.** The exporter images (`prom/node-exporter`,
-  `nvcr.io/nvidia/k8s/dcgm-exporter`) publish `linux/arm64`, and `just build-arm`
-  builds the TUI for the nodes too.
-- **`dcgm-exporter` GPU access.** `internal/exporters/docker-compose.yml` uses the Compose
+  `nvcr.io/nvidia/k8s/dcgm-exporter`) publish `linux/arm64`, and
+  `just build-arm` cross-compiles the TUI for the nodes too.
+- **GPU metrics refresh.** `dcgm-exporter` collects on its own internal
+  interval (coarse by default) — set `DCGM_EXPORTER_INTERVAL=1000` on the node
+  if you want GPU metrics to actually move every second.
+- **`dcgm-exporter` GPU access.** The compose file uses the
   `deploy.resources.reservations.devices` syntax; swap it for `runtime: nvidia`
   if your Docker is set up the older way.
-- **No GPU metrics?** If `dcgm-exporter` can't enumerate the GB10 on your DGX OS
-  build, the dashboard just shows "no GPUs reported" for that node and keeps
-  working on host metrics — or run an `nvidia-smi`-based exporter and adjust
-  `parseGPUs` in `internal/metrics/collect.go`.
-- **Firewall.** The host running `sparkmon` must reach `tcp/9100` and `tcp/9400`
-  on each node.
+- **No GPU metrics?** If `dcgm-exporter` can't enumerate the GB10 on your DGX
+  OS build, the dashboard shows "no GPUs reported" for that node and keeps
+  working on host metrics.
+- **Firewall.** The host running `sparkmon` must reach `tcp/9100` and
+  `tcp/9400` (and your vLLM port, if configured) on each node.
+- **Trade-offs vs. Prometheus + Grafana:** same exporters, same metrics, but no
+  long-term history (sparklines hold the last `history` points), no alerting,
+  and it's local to your terminal rather than a shared web UI.
+
+## Releasing
+
+Pushing a `v*` tag builds `linux`/`darwin` × `amd64`/`arm64` binaries and
+attaches them to a GitHub release (`.github/workflows/release.yml`) — that's
+what `install.sh` downloads.
 
 ## Roadmap ideas
 

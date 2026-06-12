@@ -42,41 +42,36 @@ teardown-exporters targets:
 health targets:
     go run ./cmd/sparkmon health {{targets}}
 
-# Build debian packages for Ubuntu/Debian
-deb:
-    mkdir -p debian/sparkmon/usr/bin
-    mkdir -p debian/sparkmon/var/lib/sparkmon
-    mkdir -p debian/sparkmon/etc/sparkmon
-    mkdir -p debian/sparkmon/usr/share/doc/sparkmon
-    cp bin/sparkmon debian/sparkmon/usr/bin/sparkmon
-    cp config.yaml.example debian/sparkmon/etc/sparkmon/config.yaml.example
-    cp README.md debian/sparkmon/usr/share/doc/sparkmon/README.md
-    chmod +x debian/sparkmon/usr/bin/sparkmon
-    chmod 644 debian/sparkmon/etc/sparkmon/config.yaml.example
-    chmod 644 debian/sparkmon/usr/share/doc/sparkmon/README.md
-    chown -R root:root debian/sparkmon
-    cd debian && dpkg-deb --build sparkmon ../sparkmon.deb
+# Build a Debian package. Usage: just deb <path-to-binary> <deb-arch>
+# Stages under dist/ (never touches the tracked debian/ sources).
+[private]
+deb-build binary arch:
+    rm -rf dist/deb
+    mkdir -p dist/deb/sparkmon/DEBIAN
+    mkdir -p dist/deb/sparkmon/usr/bin
+    mkdir -p dist/deb/sparkmon/etc/sparkmon
+    mkdir -p dist/deb/sparkmon/usr/share/doc/sparkmon
+    sed 's/^Architecture: .*/Architecture: {{arch}}/' debian/DEBIAN/control > dist/deb/sparkmon/DEBIAN/control
+    cp debian/postinst dist/deb/sparkmon/DEBIAN/postinst
+    chmod 755 dist/deb/sparkmon/DEBIAN/postinst
+    cp {{binary}} dist/deb/sparkmon/usr/bin/sparkmon
+    cp config.yaml.example dist/deb/sparkmon/etc/sparkmon/config.yaml.example
+    cp README.md dist/deb/sparkmon/usr/share/doc/sparkmon/README.md
+    chmod 755 dist/deb/sparkmon/usr/bin/sparkmon
+    chmod 644 dist/deb/sparkmon/etc/sparkmon/config.yaml.example dist/deb/sparkmon/usr/share/doc/sparkmon/README.md
+    dpkg-deb --build --root-owner-group dist/deb/sparkmon dist/sparkmon-{{arch}}.deb
 
-# Install to local system (requires sudo)
+# Build a deb for the current machine's architecture
+deb: build
+    just deb-build bin/sparkmon "$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+
+# Build a deb for the DGX Spark nodes (arm64)
+deb-arm: build-arm
+    just deb-build bin/sparkmon-linux-arm64 arm64
+
+# Install the deb on this machine (requires sudo)
 install-deb: deb
-    sudo apt install -f ./sparkmon.deb || echo "Run: sudo apt install -f ./sparkmon.deb"
-
-# Build for ARM64 and create deb
-deb-arm:
-    just build-arm
-    mkdir -p debian/sparkmon/usr/bin
-    mkdir -p debian/sparkmon/var/lib/sparkmon
-    mkdir -p debian/sparkmon/etc/sparkmon
-    mkdir -p debian/sparkmon/usr/share/doc/sparkmon
-    cp bin/sparkmon-*-arm64 debian/sparkmon/usr/bin/sparkmon
-    cp config.yaml.example debian/sparkmon/etc/sparkmon/config.yaml.example
-    cp README.md debian/sparkmon/usr/share/doc/sparkmon/README.md
-    chmod +x debian/sparkmon/usr/bin/sparkmon
-    chmod 644 debian/sparkmon/etc/sparkmon/config.yaml.example
-    chmod 644 debian/sparkmon/usr/share/doc/sparkmon/README.md
-    chown -R root:root debian/sparkmon
-    cd debian && dpkg-deb --build sparkmon ../sparkmon-arm64.deb
+    sudo apt install ./dist/sparkmon-*.deb
 
 clean-deb:
-    rm -rf debian/
-    rm -f *.deb
+    rm -rf dist/
